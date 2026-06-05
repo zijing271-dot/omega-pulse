@@ -1,0 +1,23 @@
+{
+  "name": "omega-pulse",
+  "version": "1.0.0",
+  "description": "OMEGA Pulse — AI-Powered API Monitoring SaaS",
+  "main": "api-monitor.js",
+  "scripts": {
+    "start": "node api-monitor.js",
+    "dev": "node api-monitor.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "railway": "^3.0.3",
+    "stripe": "^14.0.0"
+  },
+  "keywords": [
+    "api-monitoring",
+    "saas",
+    "uptime"
+  ],
+  "license": "MIT"
+}
