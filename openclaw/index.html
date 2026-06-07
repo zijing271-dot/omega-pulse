@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>OpenClaw — Claude Code 企业级部署服务 | OMEGA AI Empire</title>
+<meta name="description" content="OpenClaw: 一键部署 Claude Code 编程助手。为企业和开发者提供定制化的 AI 编程环境，包括 CLI 配置、Skill 开发、MCP Server 集成、GitHub Actions CI/CD。">
+<style>
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+body{font-family:system-ui,-apple-system,sans-serif;background:#0a0a1a;color:#e8e8f0;line-height:1.6}
+.hero{text-align:center;padding:80px 20px 50px;background:linear-gradient(135deg,#0a0a2e,#1a1a4e,#0d1a35)}
+.hero h1{font-size:clamp(2rem,5vw,3.5rem);background:linear-gradient(135deg,#ff6b35,#feca57,#4ecdc4);-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:16px}
+.hero p{font-size:1.25rem;color:#999;max-width:700px;margin:0 auto 30px}
+.hero .cta{display:inline-block;padding:14px 40px;background:linear-gradient(135deg,#ff6b35,#f7931a);color:#0a0a1a;font-weight:700;border-radius:8px;text-decoration:none;font-size:1.1rem}
+.pricing{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:24px;max-width:1100px;margin:60px auto;padding:0 20px}
+.plan{background:#13132a;border:1px solid #1e1e4a;border-radius:12px;padding:36px;text-align:center}
+.plan.featured{border-color:#ff6b35;background:linear-gradient(180deg,#1a1a35,#13132a)}
+.plan h3{font-size:1.4rem;margin-bottom:12px}
+.plan .price{font-size:2.5rem;font-weight:900;color:#feca57;margin:16px 0}
+.plan .price small{font-size:.9rem;color:#777}
+.plan ul{list-style:none;text-align:left;margin:20px 0}
+.plan ul li{padding:6px 0;color:#aaa;font-size:.9rem}
+.plan ul li::before{content:"✓";color:#4ecdc4;margin-right:8px}
+.plan .btn{display:block;padding:12px;border-radius:8px;text-decoration:none;font-weight:700;margin-top:20px}
+.plan .btn-primary{background:linear-gradient(135deg,#ff6b35,#f7931a);color:#0a0a1a}
+.plan .btn-outline{border:1px solid #7c5cfc;color:#7c5cfc}
+.features{max-width:1100px;margin:60px auto;padding:0 20px}
+.features h2{text-align:center;font-size:2rem;margin-bottom:40px;color:#7c5cfc}
+.feat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:28px}
+.feat-card{background:#13132a;border:1px solid #1e1e4a;border-radius:12px;padding:28px}
+.feat-card h4{color:#4ecdc4;margin-bottom:8px}
+.feat-card p{color:#999;font-size:.9rem}
+.how-it-works{max-width:800px;margin:60px auto;padding:0 20px}
+.how-it-works h2{text-align:center;font-size:2rem;margin-bottom:40px;color:#7c5cfc}
+.steps{list-style:none;counter-reset:step}
+.steps li{counter-increment:step;padding:20px 20px 20px 60px;position:relative;margin-bottom:12px;background:#13132a;border-radius:8px;color:#ccc}
+.steps li::before{content:counter(step);position:absolute;left:16px;top:18px;width:32px;height:32px;background:#7c5cfc;color:#fff;border-radius:50%;text-align:center;line-height:32px;font-weight:700;font-size:.9rem}
+.tech-stack{max-width:900px;margin:60px auto;padding:0 20px;text-align:center}
+.tech-stack h2{font-size:2rem;margin-bottom:30px;color:#7c5cfc}
+.tags{display:flex;flex-wrap:wrap;gap:10px;justify-content:center}
+.tag{background:#1e1e4a;color:#4ecdc4;padding:6px 16px;border-radius:20px;font-size:.85rem}
+footer{text-align:center;padding:40px;color:#555;border-top:1px solid #1a1a1a;margin-top:60px}
+footer a{color:#7c5cfc}
+</style>
+</head>
+<body>
+
+<div class="hero">
+  <h1>OpenClaw Deployment Service</h1>
+  <p>Claude Code 企业级一键部署 — 为开发团队提供定制化的 AI 编程助手。包含 CLI 配置、Skill 开发、MCP Server 集成、CI/CD 流水线。</p>
+  <a href="#pricing" class="cta">查看方案 →</a>
+</div>
+
+<div class="pricing" id="pricing">
+  <div class="plan">
+    <h3>🚀 Starter</h3>
+    <p style="color:#999">个人开发者</p>
+    <div class="price">￥100<small>/次</small></div>
+    <ul>
+      <li>Claude Code CLI 安装配置</li>
+      <li>基础 CLAUDE.md 模板</li>
+      <li>3 个预置 Skills</li>
+      <li>GitHub 集成</li>
+      <li>7 天邮件支持</li>
+    </ul>
+    <a href="https://github.com/zijing271-dot/omega-empire/issues/new?title=OpenClaw+Starter" class="btn btn-outline">立即订购</a>
+  </div>
+
+  <div class="plan featured">
+    <h3>🏢 Professional <span style="font-size:.7rem;background:#feca57;color:#0a0a1a;padding:2px 8px;border-radius:10px;margin-left:6px">推荐</span></h3>
+    <p style="color:#999">小型团队 (2-10人)</p>
+    <div class="price">￥300<small>/次 + ￥29/月</small></div>
+    <ul>
+      <li>全部 Starter 功能</li>
+      <li>自定义 CLAUDE.md 按项目定制</li>
+      <li>10+ Skills 开发与部署</li>
+      <li>MCP Server 配置 (Context7, Playwright, Exa)</li>
+      <li>GitHub Actions CI/CD 流水线</li>
+      <li>Hooks 自动触发配置</li>
+      <li>30 天技术支持和更新</li>
+    </ul>
+    <a href="https://github.com/zijing271-dot/omega-empire/issues/new?title=OpenClaw+Professional" class="btn btn-primary">立即订购</a>
+  </div>
+
+  <div class="plan">
+    <h3>🏭 Enterprise</h3>
+    <p style="color:#999">中大型企业</p>
+    <div class="price">￥1000<small>/次 + ￥99/月</small></div>
+    <ul>
+      <li>全部 Professional 功能</li>
+      <li>多仓库统一配置管理</li>
+      <li>私有 MCP Server 开发</li>
+      <li>自定义 Agent 工作流编排</li>
+      <li>安全审计 + 合规检查</li>
+      <li>Worktree 隔离环境部署</li>
+      <li>专属技术顾问 24/7</li>
+    </ul>
+    <a href="https://github.com/zijing271-dot/omega-empire/issues/new?title=OpenClaw+Enterprise" class="btn btn-outline">联系我们</a>
+  </div>
+</div>
+
+<div class="features">
+  <h2>服务内容</h2>
+  <div class="feat-grid">
+    <div class="feat-card">
+      <h4>⚙️ CLI 环境部署</h4>
+      <p>Node.js 环境配置、Claude Code npm 全局安装、API Key 配置、settings.json 调优、模型选择优化。</p>
+    </div>
+    <div class="feat-card">
+      <h4>📝 CLAUDE.md 定制</h4>
+      <p>根据项目技术栈生成专属 CLAUDE.md：包含编码规范、项目结构、构建命令、测试策略、部署流程。</p>
+    </div>
+    <div class="feat-card">
+      <h4>🛠 Skill 开发</h4>
+      <p>开发和部署自定义 Skills：代码审查、安全扫描、测试生成、文档更新、部署自动化等。</p>
+    </div>
+    <div class="feat-card">
+      <h4>🔌 MCP Server 集成</h4>
+      <p>Context7 实时文档查询、Playwright 浏览器自动化、Exa 深度搜索、Sequential Thinking 推理引擎。</p>
+    </div>
+    <div class="feat-card">
+      <h4>🪝 Hooks 自动化</h4>
+      <p>PostToolUse 代码检查、SessionStart 环境初始化、Notification 桌面提醒、自定义事件触发。</p>
+    </div>
+    <div class="feat-card">
+      <h4>🔄 CI/CD 集成</h4>
+      <p>GitHub Actions 自动代码审查流水线、PR 评审自动化、构建验证、测试覆盖率报告。</p>
+    </div>
+    <div class="feat-card">
+      <h4>🌐 Worktree 隔离</h4>
+      <p>并行 Git Worktree 环境部署，多 Agent 同时工作互不干扰，自动清理和合并策略。</p>
+    </div>
+    <div class="feat-card">
+      <h4>🔒 安全合规</h4>
+      <p>API Key 安全管理、敏感信息扫描、权限最小化配置、代码安全审查规则。</p>
+    </div>
+  </div>
+</div>
+
+<div class="how-it-works">
+  <h2>部署流程</h2>
+  <ol class="steps">
+    <li><strong>需求沟通</strong> — 了解团队规模、技术栈、使用场景，确定部署方案</li>
+    <li><strong>环境准备</strong> — 远程/本地部署 Node.js、Claude Code CLI、API 配置</li>
+    <li><strong>定制开发</strong> — 编写 CLAUDE.md、Skills、Hooks、MCP Server 配置</li>
+    <li><strong>集成测试</strong> — 在真实项目中验证所有功能，确保开箱即用</li>
+    <li><strong>交付培训</strong> — 交付配置包 + 30 分钟使用培训 + 操作文档</li>
+    <li><strong>持续支持</strong> — 月度更新 Skills、监控 API 变更、优化配置</li>
+  </ol>
+</div>
+
+<div class="tech-stack">
+  <h2>技术栈</h2>
+  <div class="tags">
+    <span class="tag">Claude Code CLI</span>
+    <span class="tag">Node.js 18+</span>
+    <span class="tag">Git Worktree</span>
+    <span class="tag">GitHub Actions</span>
+    <span class="tag">MCP Protocol</span>
+    <span class="tag">Context7 API</span>
+    <span class="tag">Playwright</span>
+    <span class="tag">TypeScript</span>
+    <span class="tag">Python 3.11+</span>
+    <span class="tag">Docker</span>
+    <span class="tag">PM2</span>
+    <span class="tag">Nginx</span>
+  </div>
+</div>
+
+<footer>
+  <p>OpenClaw — OMEGA AI Empire 旗下产品 | Claude Code Enterprise Deployment Service</p>
+  <p><a href="../">← 返回 OMEGA Empire 首页</a></p>
+  <p style="margin-top:8px;color:#444">Generated: 2026-06-06T00:30:00Z</p>
+</footer>
+
+</body>
+</html>
