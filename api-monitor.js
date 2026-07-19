@@ -64,6 +64,22 @@ function isSafeMonitorUrl(raw) {
   return true;
 }
 
+// ── Access tokens (replace plaintext ?email= auth) ──
+// A random bearer token is issued to a user; only its SHA-256 hash is stored.
+// The raw token is the credential — knowing an email is no longer enough.
+function genToken() { return crypto.randomBytes(32).toString('hex'); }
+function hashToken(t) { return crypto.createHash('sha256').update(String(t)).digest('hex'); }
+function getBearer(req, url) {
+  const h = req.headers['authorization'] || '';
+  if (h.startsWith('Bearer ')) return h.slice(7).trim();
+  return url.searchParams.get('token') || '';
+}
+function findUserByToken(adb, token) {
+  if (!token) return null;
+  const th = hashToken(token);
+  return (adb.users || []).find(u => u.tokenHash === th) || null;
+}
+
 // ── Monitor Engine ──
 async function checkEndpoint(monitor) {
   const start = Date.now();
@@ -251,7 +267,7 @@ const server = http.createServer(async (req, res) => {
           case 'checkout.session.completed': {
             const session = event.data.object;
             const plan = session.metadata?.plan || 'basic';
-            const email = session.metadata?.email || session.customer_email || '';
+            const email = session.metadata?.email || session.customer_email || session.customer_details?.email || '';
             const amount = (session.amount_total || 2900) / 100;
             db.revenue += amount;
             db.payments.push({
@@ -263,6 +279,41 @@ const server = http.createServer(async (req, res) => {
             });
             saveDB();
             console.log(`  💰 REAL PAYMENT: ${plan} — $${amount} from ${email} (Total: $${db.revenue})`);
+
+            // Grant paid access ONLY here, after Stripe-verified payment.
+            // This is the single source of truth for arsenal entitlements.
+            if (session.metadata?.product === 'arsenal') {
+              const arsenalPath = path.join(DATA_DIR, 'arsenal-db.json');
+              let adb = { users: [], subscriptions: [], affiliates: [], affiliateClicks: [], emailQueue: [], revenue: 0 };
+              try { if (fs.existsSync(arsenalPath)) adb = JSON.parse(fs.readFileSync(arsenalPath, 'utf8')); } catch {}
+              const aPlan = session.metadata?.plan || 'pro';
+              const promo = session.metadata?.promo || '';
+              const ref = session.metadata?.ref || '';
+              let user = adb.users.find(u => u.email === email);
+              if (user) {
+                user.plan = aPlan; user.amount = amount; user.stripeCustomerId = session.customer; user.status = 'active';
+              } else {
+                user = { id: crypto.randomUUID(), email, plan: aPlan, promo, amount, stripeCustomerId: session.customer, status: 'active', createdAt: Date.now(), affiliateCode: ref };
+                adb.users.push(user);
+              }
+              adb.subscriptions.push({ id: crypto.randomUUID(), userId: user.id, plan: aPlan, promo, amount, status: 'active', stripeSessionId: session.id, createdAt: Date.now() });
+              adb.revenue = (adb.revenue || 0) + amount;
+              adb.emailQueue = adb.emailQueue || [];
+              adb.emailQueue.push({ to: email, type: 'welcome', plan: aPlan, ts: Date.now(), sent: false });
+              // Affiliate commission — credited on verified payment only
+              if (ref) {
+                const affiliate = (adb.affiliates || []).find(a => a.code === ref);
+                if (affiliate) {
+                  const commission = Math.round(amount * 0.3 * 100) / 100;
+                  affiliate.commissions = affiliate.commissions || [];
+                  affiliate.commissions.push({ amount: commission, plan: aPlan, ts: Date.now(), userId: user.id });
+                  affiliate.totalEarned = (affiliate.totalEarned || 0) + commission;
+                  adb.emailQueue.push({ to: affiliate.email, type: 'commission', plan: aPlan, amount: commission, ts: Date.now(), sent: false });
+                }
+              }
+              fs.writeFileSync(arsenalPath, JSON.stringify(adb, null, 2));
+              console.log(`  [Arsenal] PAID ACCESS GRANTED (webhook-verified): ${aPlan} $${amount} — ${email}`);
+            }
             break;
           }
           case 'invoice.paid': {
@@ -293,15 +344,34 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'POST' && url.pathname === '/api/subscribe') {
-    return body().then(b => {
+    return body().then(async b => {
+      if (!stripe) return send(503, { error: 'Payments are not configured. Set STRIPE_SECRET_KEY.' });
       const plan = b.plan || 'basic';
-      const prices = { basic: 29, pro: 99, enterprise: 499 };
-      const amount = prices[plan] || 29;
-      db.revenue += amount;
-      db.payments.push({ id: crypto.randomUUID(), plan, amount, email: b.email, ts: Date.now() });
-      saveDB();
-      console.log(`  💰 NEW SUBSCRIPTION: ${plan} — $${amount}/mo (Total Revenue: $${db.revenue})`);
-      send(201, { subscribed: true, plan, amount, totalRevenue: db.revenue });
+      const amounts = { basic: 2900, pro: 9900, enterprise: 49900 };
+      try {
+        const session = await stripe.checkout.sessions.create({
+          payment_method_types: ['card'],
+          mode: 'subscription',
+          line_items: [{
+            price_data: {
+              currency: 'usd',
+              product_data: { name: `OMEGA Pulse — ${plan.toUpperCase()}`, description: `API Monitoring ${plan} plan` },
+              recurring: { interval: 'month' },
+              unit_amount: amounts[plan] || 2900,
+            },
+            quantity: 1,
+          }],
+          success_url: b.success_url || `${PUBLIC_URL}/success`,
+          cancel_url: b.cancel_url || `${PUBLIC_URL}/`,
+          customer_email: b.email,
+          metadata: { plan, email: b.email || '' },
+        });
+        // Revenue/entitlement is recorded by the verified webhook, not here.
+        return send(200, { checkoutUrl: session.url, sessionId: session.id, plan, requiresPayment: true });
+      } catch (e) {
+        console.error('  Stripe error:', e.message);
+        return send(500, { error: e.message });
+      }
     });
   }
 
@@ -384,20 +454,28 @@ h1{background:linear-gradient(135deg,#7c5cfc,#4ecdc4);-webkit-background-clip:te
   if (req.method === 'GET' && url.pathname === '/api/arsenal/subscribe') {
     const plan = url.searchParams.get('plan') || 'pro';
     const promo = url.searchParams.get('promo_code') || '';
+    const subEmail = url.searchParams.get('email') || '';
+    const subRef = url.searchParams.get('ref') || '';
     const planInfo = ARSENAL_PLANS[plan] || ARSENAL_PLANS.pro;
     let amount = planInfo.stripeAmount;
     if (promo === 'ARSENAL50') amount = Math.round(amount * 0.5);
-    if (!stripe || plan === 'explorer') {
-      // Free plan or no Stripe — register directly
-      const email = url.searchParams.get('email') || 'free-user@arsenal.io';
-      const user = { id: crypto.randomUUID(), email, plan, promo, amount: amount / 100, createdAt: Date.now() };
-      arsenalDB.users.push(user);
-      arsenalDB.subscriptions.push({ userId: user.id, plan, promo, amount: amount / 100, status: 'active', createdAt: Date.now() });
-      arsenalDB.revenue += amount / 100;
-      arsenalDB.emailQueue.push({ to: email, type: 'welcome', plan, ts: Date.now(), sent: false });
-      saveArsenalDB();
-      console.log(`  [Arsenal] NEW SUB: ${plan} $${amount/100} ${promo ? '(promo:'+promo+')' : ''} — Total: $${arsenalDB.revenue}`);
-      res.writeHead(302, { Location: '/success?product=arsenal&plan=' + plan + '&email=' + encodeURIComponent(email) });
+    if (plan === 'explorer' || planInfo.stripeAmount === 0) {
+      // Free plan — register directly (no payment). Paid plans NEVER reach here.
+      const email = url.searchParams.get('email') || '';
+      let user = arsenalDB.users.find(u => u.email === email && email);
+      if (!user) {
+        user = { id: crypto.randomUUID(), email: email || 'free-user@arsenal.io', plan: 'explorer', promo, amount: 0, status: 'active', createdAt: Date.now() };
+        arsenalDB.users.push(user);
+        arsenalDB.emailQueue.push({ to: user.email, type: 'welcome', plan: 'explorer', ts: Date.now(), sent: false });
+        saveArsenalDB();
+      }
+      console.log(`  [Arsenal] FREE SIGNUP: explorer — ${user.email}`);
+      res.writeHead(302, { Location: '/success?product=arsenal&plan=explorer&email=' + encodeURIComponent(user.email) });
+      return res.end();
+    }
+    if (!stripe) {
+      // Paid plan requested but payments not configured — do NOT grant access.
+      res.writeHead(302, { Location: '/arsenal?error=payments_unavailable' });
       return res.end();
     }
     try {
@@ -413,9 +491,10 @@ h1{background:linear-gradient(135deg,#7c5cfc,#4ecdc4);-webkit-background-clip:te
           },
           quantity: 1,
         }],
-        success_url: `${PUBLIC_URL}/success?product=arsenal&plan=` + plan,
+        success_url: `${PUBLIC_URL}/success?product=arsenal&plan=${plan}&session_id={CHECKOUT_SESSION_ID}`,
         cancel_url: `${PUBLIC_URL}/arsenal`,
-        metadata: { product: 'arsenal', plan, promo },
+        customer_email: subEmail || undefined,
+        metadata: { product: 'arsenal', plan, promo, email: subEmail, ref: subRef },
         allow_promotion_codes: true,
       });
       console.log(`  [Arsenal] Stripe Checkout: ${plan} $${amount/100} → ${session.id}`);
@@ -429,30 +508,63 @@ h1{background:linear-gradient(135deg,#7c5cfc,#4ecdc4);-webkit-background-clip:te
   }
 
   if (req.method === 'POST' && url.pathname === '/api/arsenal/subscribe') {
-    return body().then(b => {
+    return body().then(async b => {
       const plan = b.plan || 'pro';
       const promo = b.promo_code || '';
+      const email = (b.email || '').trim().toLowerCase();
+      const ref = b.ref || '';
       const planInfo = ARSENAL_PLANS[plan] || ARSENAL_PLANS.pro;
-      let amount = planInfo.price;
-      if (promo === 'ARSENAL50') amount = Math.round(amount * 0.5);
-      const user = { id: crypto.randomUUID(), email: b.email || 'user@arsenal.io', plan, promo, amount, createdAt: Date.now(), source: b.source || 'direct', affiliateCode: b.ref || '' };
-      arsenalDB.users.push(user);
-      arsenalDB.subscriptions.push({ id: crypto.randomUUID(), userId: user.id, plan, promo, amount, status: 'active', createdAt: Date.now() });
-      arsenalDB.revenue += amount;
-      arsenalDB.emailQueue.push({ to: user.email, type: 'welcome', plan, ts: Date.now(), sent: false });
-      // Affiliate commission
-      if (b.ref && arsenalDB.affiliates.find(a => a.code === b.ref)) {
-        const affiliate = arsenalDB.affiliates.find(a => a.code === b.ref);
-        const commission = Math.round(amount * 0.3 * 100) / 100;
-        affiliate.commissions = affiliate.commissions || [];
-        affiliate.commissions.push({ amount: commission, plan, ts: Date.now(), userId: user.id });
-        affiliate.totalEarned = (affiliate.totalEarned || 0) + commission;
-        arsenalDB.emailQueue.push({ to: affiliate.email, type: 'commission', plan, amount: commission, ts: Date.now(), sent: false });
-        console.log(`  [Arsenal] AFFILIATE COMMISSION: ${affiliate.code} +$${commission}`);
+
+      // Free tier: no payment involved, register directly.
+      if (plan === 'explorer' || planInfo.stripeAmount === 0) {
+        if (!email || !email.includes('@')) return send(400, { error: 'Valid email required' });
+        let user = arsenalDB.users.find(u => u.email === email);
+        // Never let a free signup touch an existing PAID account (token hijack).
+        if (user && user.plan !== 'explorer' && (user.amount || 0) > 0) {
+          return send(409, { error: 'An account already exists for this email. Claim your access token via /api/arsenal/claim-token after checkout.' });
+        }
+        if (!user) {
+          user = { id: crypto.randomUUID(), email, plan: 'explorer', amount: 0, status: 'active', createdAt: Date.now(), source: b.source || 'direct', affiliateCode: ref };
+          arsenalDB.users.push(user);
+          arsenalDB.emailQueue.push({ to: email, type: 'welcome', plan: 'explorer', ts: Date.now(), sent: false });
+        }
+        const token = genToken();
+        user.tokenHash = hashToken(token);
+        user.tokenIssuedAt = Date.now();
+        saveArsenalDB();
+        return send(201, { registered: true, plan: 'explorer', token });
       }
-      saveArsenalDB();
-      console.log(`  [Arsenal] POST SUB: ${plan} $${amount}/mo — ${user.email} — Total: $${arsenalDB.revenue}`);
-      return send(201, { subscribed: true, plan, amount, totalRevenue: arsenalDB.revenue, userId: user.id });
+
+      // Paid plans MUST pay via Stripe. Entitlement is granted ONLY by the
+      // verified webhook (checkout.session.completed) — never here.
+      if (!stripe) return send(503, { error: 'Payments are not configured. Set STRIPE_SECRET_KEY.' });
+      let amount = planInfo.stripeAmount;
+      if (promo === 'ARSENAL50') amount = Math.round(amount * 0.5);
+      try {
+        const session = await stripe.checkout.sessions.create({
+          payment_method_types: ['card'],
+          mode: 'subscription',
+          line_items: [{
+            price_data: {
+              currency: 'usd',
+              product_data: { name: 'GitHub Arsenal — ' + planInfo.name, description: planInfo.name + ' Plan' },
+              recurring: { interval: 'month' },
+              unit_amount: amount,
+            },
+            quantity: 1,
+          }],
+          success_url: `${PUBLIC_URL}/success?product=arsenal&plan=` + plan,
+          cancel_url: `${PUBLIC_URL}/arsenal`,
+          customer_email: email || undefined,
+          metadata: { product: 'arsenal', plan, promo, email, ref },
+          allow_promotion_codes: true,
+        });
+        console.log(`  [Arsenal] POST checkout session: ${plan} $${amount / 100} → ${session.id}`);
+        return send(200, { checkoutUrl: session.url, sessionId: session.id, plan, requiresPayment: true });
+      } catch (e) {
+        console.error('  [Arsenal] Stripe error:', e.message);
+        return send(500, { error: e.message });
+      }
     });
   }
 
@@ -530,11 +642,10 @@ h1{background:linear-gradient(135deg,#7c5cfc,#4ecdc4);-webkit-background-clip:te
     const toolId = url.pathname.replace('/api/arsenal/reports/', '');
     const tool = TOOLS.find(t => t.id === toolId);
     if (!tool) return send(404, { error: 'Tool not found' });
-    // Check auth — Pro or Enterprise required
-    const authEmail = url.searchParams.get('email') || '';
-    const user = arsenalDB.users.find(u => u.email === authEmail);
+    // Auth via bearer token — Pro or Enterprise required
+    const user = findUserByToken(arsenalDB, getBearer(req, url));
     const hasAccess = user && (user.plan === 'pro' || user.plan === 'enterprise');
-    if (!hasAccess) return send(403, { error: 'Pro subscription required. Unlock at /api/arsenal/subscribe?plan=pro', upgradeUrl: '/api/arsenal/subscribe?plan=pro' });
+    if (!hasAccess) return send(403, { error: 'Pro subscription required. Provide a valid access token (Authorization: Bearer <token>).', upgradeUrl: '/api/arsenal/subscribe?plan=pro' });
     const report = generateAIReport(tool);
     return send(200, report);
   }
@@ -632,9 +743,8 @@ h1{background:linear-gradient(135deg,#7c5cfc,#4ecdc4);-webkit-background-clip:te
   if (req.method === 'POST' && url.pathname === '/api/arsenal/compare') {
     return body().then(b => {
       const toolIds = b.tools || [];
-      const authEmail = b.email || '';
-      const user = arsenalDB.users.find(u => u.email === authEmail);
-      if (!user || (user.plan !== 'pro' && user.plan !== 'enterprise')) return send(403, { error: 'Pro subscription required for comparison engine.' });
+      const user = findUserByToken(arsenalDB, getBearer(req, url) || b.token || '');
+      if (!user || (user.plan !== 'pro' && user.plan !== 'enterprise')) return send(403, { error: 'Pro subscription required. Provide a valid access token.' });
       const results = toolIds.map(id => {
         const tool = TOOLS.find(t => t.id === id);
         if (!tool) return null;
@@ -683,22 +793,51 @@ h1{background:linear-gradient(135deg,#7c5cfc,#4ecdc4);-webkit-background-clip:te
     });
   }
 
+  // ── Claim access token after a verified Stripe payment ──
+  // Browser lands on success_url with ?session_id=...; it POSTs that here.
+  // We verify the session is paid via Stripe, then mint a bearer token for the
+  // matching user. Only the payer holds the session id and it is checked as
+  // paid — so this proves ownership without trusting a plaintext email.
+  if (req.method === 'POST' && url.pathname === '/api/arsenal/claim-token') {
+    return body().then(async b => {
+      if (!stripe) return send(503, { error: 'Payments not configured' });
+      const sessionId = b.sessionId || b.session_id || '';
+      if (!sessionId) return send(400, { error: 'sessionId required' });
+      try {
+        const session = await stripe.checkout.sessions.retrieve(sessionId);
+        const paid = session && (session.payment_status === 'paid' || session.status === 'complete');
+        if (!paid) return send(402, { error: 'Payment not completed for this session' });
+        const email = (session.metadata?.email || session.customer_email || session.customer_details?.email || '').trim().toLowerCase();
+        const user = email && arsenalDB.users.find(u => u.email === email);
+        if (!user) return send(404, { error: 'No account found for this payment yet — the webhook may still be processing. Try again shortly.' });
+        const token = genToken();
+        user.tokenHash = hashToken(token);
+        user.tokenIssuedAt = Date.now();
+        saveArsenalDB();
+        return send(200, { token, plan: user.plan, email: user.email });
+      } catch (e) {
+        return send(400, { error: 'Invalid session: ' + e.message });
+      }
+    });
+  }
+
   // ── User Auth ──
+  // Login is informational only — it never issues a token or leaks account
+  // data by email alone. Paid users get their token from /claim-token.
   if (req.method === 'POST' && url.pathname === '/api/arsenal/login') {
     return body().then(b => {
       const email = (b.email || '').trim().toLowerCase();
       if (!email) return send(400, { error: 'Email required' });
       const user = arsenalDB.users.find(u => u.email === email);
-      if (!user) return send(200, { registered: false, email, message: 'No account found. Subscribe to get started.', subscribeUrl: '/api/arsenal/subscribe?plan=pro' });
-      return send(200, { registered: true, user: { email: user.email, plan: user.plan, amount: user.amount, createdAt: user.createdAt, subscriptionActive: true } });
+      if (!user) return send(200, { registered: false, message: 'No account found. Subscribe to get started.', subscribeUrl: '/api/arsenal/subscribe?plan=pro' });
+      return send(200, { registered: true, message: 'Account found. Complete checkout and claim your access token via /api/arsenal/claim-token.' });
     });
   }
 
   if (req.method === 'GET' && url.pathname === '/api/arsenal/me') {
-    const email = url.searchParams.get('email') || '';
-    const user = arsenalDB.users.find(u => u.email === email);
-    if (!user) return send(404, { error: 'Not found' });
-    return send(200, { user: { email: user.email, plan: user.plan, amount: user.amount, createdAt: user.createdAt }, totalUsers: arsenalDB.users.length, totalRevenue: arsenalDB.revenue });
+    const user = findUserByToken(arsenalDB, getBearer(req, url));
+    if (!user) return send(401, { error: 'Invalid or missing access token' });
+    return send(200, { user: { email: user.email, plan: user.plan, amount: user.amount, createdAt: user.createdAt } });
   }
 
   // ── Arsenal Stats (public) ──
@@ -726,8 +865,7 @@ h1{background:linear-gradient(135deg,#7c5cfc,#4ecdc4);-webkit-background-clip:te
 
   // ── Arsenal Dashboard (HTML) ──
   if (req.method === 'GET' && url.pathname === '/api/arsenal/dashboard') {
-    const email = url.searchParams.get('email') || '';
-    const user = arsenalDB.users.find(u => u.email === email);
+    const user = findUserByToken(arsenalDB, getBearer(req, url));
     applySecurityHeaders(res, { 'Content-Type': 'text/html; charset=utf-8', 'Content-Security-Policy': "default-src 'self'; style-src 'unsafe-inline'; script-src 'none'; frame-ancestors 'none';" });
     res.writeHead(200);
     return res.end(`
