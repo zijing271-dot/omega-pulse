@@ -33,9 +33,43 @@ if (fs.existsSync(DB_FILE)) {
 
 function saveDB() { fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2)); }
 
+// ── SSRF guard ──
+// Only allow http(s) to public hosts. Blocks loopback, private, link-local
+// (incl. cloud metadata 169.254.169.254) and internal TLDs. Note: does not
+// resolve DNS, so a hostname pointing at a private IP (DNS rebinding) is not
+// caught here — acceptable baseline for a public-endpoint monitor.
+function isSafeMonitorUrl(raw) {
+  let u;
+  try { u = new URL(String(raw)); } catch { return false; }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
+  const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (host === 'localhost' || host.endsWith('.localhost') ||
+      host.endsWith('.local') || host.endsWith('.internal') ||
+      host === 'metadata.google.internal') return false;
+  // IPv4 loopback / private / link-local / CGNAT
+  const m = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (m) {
+    const a = +m[1], b = +m[2];
+    if (m.some(x => +x > 255)) return false;
+    if (a === 0 || a === 127) return false;
+    if (a === 10) return false;
+    if (a === 169 && b === 254) return false;
+    if (a === 172 && b >= 16 && b <= 31) return false;
+    if (a === 192 && b === 168) return false;
+    if (a === 100 && b >= 64 && b <= 127) return false;
+  }
+  // IPv6 loopback / link-local / unique-local
+  if (host === '::1' || host === '::' ||
+      host.startsWith('fe80') || host.startsWith('fc') || host.startsWith('fd')) return false;
+  return true;
+}
+
 // ── Monitor Engine ──
 async function checkEndpoint(monitor) {
   const start = Date.now();
+  if (!isSafeMonitorUrl(monitor.url)) {
+    return { up: false, statusCode: 0, latency: 0, checkedAt: Date.now(), blocked: true };
+  }
   return new Promise((resolve) => {
     const url = new URL(monitor.url);
     const mod = url.protocol === 'https:' ? https : http;
@@ -125,7 +159,10 @@ const server = http.createServer(async (req, res) => {
 	  }
   if (req.method === 'POST' && url.pathname === '/api/monitors') {
     return body().then(b => {
-      const monitor = { id: crypto.randomUUID(), name: b.name, url: b.url, active: true, createdAt: Date.now(), history: [] };
+      if (!isSafeMonitorUrl(b.url)) {
+        return send(400, { error: 'Invalid or disallowed URL. Only public http(s) endpoints are allowed (private, loopback and link-local addresses are blocked).' });
+      }
+      const monitor = { id: crypto.randomUUID(), name: String(b.name || b.url).slice(0, 200), url: b.url, active: true, createdAt: Date.now(), history: [] };
       db.monitors.push(monitor);
       saveDB();
       send(201, monitor);
@@ -203,10 +240,13 @@ const server = http.createServer(async (req, res) => {
     req.on('data', c => rawBody += c);
     return req.on('end', async () => {
       try {
+        if (!STRIPE_WEBHOOK_SECRET) {
+          console.error('  Webhook rejected: STRIPE_WEBHOOK_SECRET not configured (refusing to process unverified event)');
+          res.writeHead(500);
+          return res.end(JSON.stringify({ error: 'Webhook secret not configured' }));
+        }
         const sig = req.headers['stripe-signature'];
-        const event = STRIPE_WEBHOOK_SECRET
-          ? stripe.webhooks.constructEvent(rawBody, sig, STRIPE_WEBHOOK_SECRET)
-          : JSON.parse(rawBody);
+        const event = stripe.webhooks.constructEvent(rawBody, sig, STRIPE_WEBHOOK_SECRET);
         switch (event.type) {
           case 'checkout.session.completed': {
             const session = event.data.object;
